@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>CAN Bus Monitor</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: Arial, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
+        h1 { color: #58a6ff; text-align: center; margin-bottom: 20px; font-size: 24px; }
+
+        .status-bar { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+        .badge { padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; display: flex; align-items: center; gap: 6px; }
+        .badge.ok { background: #1a4731; color: #3fb950; border: 1px solid #3fb950; }
+        .badge.error { background: #4a1f1f; color: #f85149; border: 1px solid #f85149; }
+        .badge.warning { background: #3d2b00; color: #d29922; border: 1px solid #d29922; }
+        .badge.info { background: #0d2440; color: #58a6ff; border: 1px solid #58a6ff; }
+
+        .indicator { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .indicator.green { background: #3fb950; box-shadow: 0 0 8px #3fb950; }
+        .indicator.red { background: #f85149; box-shadow: 0 0 8px #f85149; animation: blink 0.5s infinite; }
+        .indicator.yellow { background: #d29922; box-shadow: 0 0 8px #d29922; }
+        @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.2; } }
+
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+        .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
+        .card h3 { font-size: 14px; color: #8b949e; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+
+        .stat-value { font-size: 36px; font-weight: bold; color: #58a6ff; }
+        .stat-label { font-size: 12px; color: #8b949e; margin-top: 4px; }
+        .stat-ok { color: #3fb950; }
+        .stat-error { color: #f85149; }
+        .stat-warn { color: #d29922; }
+
+        #log { height: 180px; overflow-y: auto; font-family: monospace; font-size: 12px;
+               background: #0d1117; padding: 10px; border-radius: 5px; border: 1px solid #30363d; }
+        .log-normal { color: #3fb950; }
+        .log-error { color: #f85149; }
+        .log-warn { color: #d29922; }
+        .log-info { color: #58a6ff; }
+
+        canvas { max-height: 220px; }
+
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th { background: #21262d; color: #8b949e; padding: 6px 10px; text-align: left; }
+        td { padding: 5px 10px; border-bottom: 1px solid #21262d; }
+        tr:hover td { background: #161b22; }
+        .full-width { grid-column: span 2; }
+    </style>
+</head>
+<body>
+    <h1>🚗 CAN Bus Real-Time Monitor</h1>
+
+    <div class="status-bar">
+        <div class="badge ok" id="conn-badge">
+            <span class="indicator green" id="conn-indicator"></span>Connected
+        </div>
+        <div class="badge ok" id="bus-badge">
+            <span class="indicator green" id="bus-indicator"></span>BUS: Normal
+        </div>
+        <div class="badge info" id="tec-badge">TEC: 0</div>
+        <div class="badge info" id="rec-badge">REC: 0</div>
+        <div class="badge warning" id="busoff-badge">Bus-Off: 0</div>
+        <div class="badge info" id="frame-badge">Frames: 0</div>
+        <div class="badge ok" id="loss-badge">Loss: 0.0%</div>
+    </div>
+
+    <div class="grid3">
+        <div class="card">
+            <h3>Total Frames</h3>
+            <div class="stat-value stat-ok" id="stat-frames">0</div>
+            <div class="stat-label">received</div>
+        </div>
+        <div class="card">
+            <h3>Bus-Off Events</h3>
+            <div class="stat-value stat-error" id="stat-busoff">0</div>
+            <div class="stat-label">total events</div>
+        </div>
+        <div class="card">
+            <h3>Frame Loss Rate</h3>
+            <div class="stat-value stat-warn" id="stat-loss">0.0%</div>
+            <div class="stat-label">dropped frames</div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h3>🌡️ Temperature (°C)</h3>
+            <canvas id="tempChart"></canvas>
+        </div>
+        <div class="card">
+            <h3>⚡ Voltage (V)</h3>
+            <canvas id="voltChart"></canvas>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h3>📋 Event Log</h3>
+            <div id="log"></div>
+        </div>
+        <div class="card">
+            <h3>📊 Recent Fault Events</h3>
+            <table>
+                <thead><tr><th>Time</th><th>Type</th><th>TEC</th><th>REC</th></tr></thead>
+                <tbody id="fault-table"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const MAX_POINTS = 60;
+        let busOffCount = 0;
+        let totalFrames = 0;
+        let lostFrames = 0;
+        let expectedFrame = null;
+
+        const tempData = { labels: [], datasets: [{ label: 'Temp °C', data: [],
+            borderColor: '#f85149', backgroundColor: 'rgba(248,81,73,0.1)',
+            tension: 0.3, pointRadius: 2 }] };
+        const voltData = { labels: [], datasets: [{ label: 'Volt V', data: [],
+            borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,0.1)',
+            tension: 0.3, pointRadius: 2 }] };
+
+        const chartOpts = (min, max) => ({
+            animation: false,
+            plugins: { legend: { labels: { color: '#8b949e' } } },
+            scales: {
+                x: { ticks: { color: '#8b949e', maxTicksLimit: 8 }, grid: { color: '#21262d' } },
+                y: { min, max, ticks: { color: '#8b949e' }, grid: { color: '#21262d' } }
+            }
+        });
+
+        const tempChart = new Chart(document.getElementById('tempChart'),
+            { type: 'line', data: tempData, options: chartOpts(20, 40) });
+        const voltChart = new Chart(document.getElementById('voltChart'),
+            { type: 'line', data: voltData, options: chartOpts(10, 13) });
+
+        function addLog(msg, cls) {
+            const log = document.getElementById('log');
+            const div = document.createElement('div');
+            div.className = 'log-' + cls;
+            div.textContent = `[${new Date().toLocaleTimeString('en',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'})}] ${msg}`;
+            log.appendChild(div);
+            if (log.children.length > 100) log.removeChild(log.firstChild);
+            log.scrollTop = log.scrollHeight;
+        }
+
+        function addFaultRow(type, tec, rec) {
+            const tbody = document.getElementById('fault-table');
+            const tr = document.createElement('tr');
+            const time = new Date().toLocaleTimeString('en',{hour12:false});
+            tr.innerHTML = `<td>${time}</td><td style="color:#f85149">${type}</td><td>${tec}</td><td>${rec}</td>`;
+            tbody.insertBefore(tr, tbody.firstChild);
+            if (tbody.children.length > 10) tbody.removeChild(tbody.lastChild);
+        }
+
+        function addPoint(chart, data, label, value) {
+            data.labels.push(label);
+            data.datasets[0].data.push(value);
+            if (data.labels.length > MAX_POINTS) {
+                data.labels.shift();
+                data.datasets[0].data.shift();
+            }
+            chart.update('none');
+        }
+
+        function updateStats() {
+            const rate = totalFrames > 0 ? (lostFrames / (totalFrames + lostFrames) * 100).toFixed(1) : '0.0';
+            document.getElementById('stat-frames').textContent = totalFrames;
+            document.getElementById('stat-busoff').textContent = busOffCount;
+            document.getElementById('stat-loss').textContent = rate + '%';
+            document.getElementById('frame-badge').textContent = `Frames: ${totalFrames}`;
+            document.getElementById('loss-badge').textContent = `Loss: ${rate}%`;
+            document.getElementById('loss-badge').className = parseFloat(rate) > 0 ? 'badge warning' : 'badge ok';
+        }
+
+        socket.on('can_data', function(d) {
+            if (d.type === 'temp') {
+                totalFrames++;
+                if (expectedFrame !== null && d.frame !== expectedFrame) {
+                    const lost = d.frame - expectedFrame;
+                    lostFrames += lost;
+                    addLog(`⚠️ LOST ${lost} frames (expected ${expectedFrame}, got ${d.frame})`, 'warn');
+                }
+                expectedFrame = d.frame + 1;
+                addPoint(tempChart, tempData, d.frame, d.value);
+                updateStats();
+            } else if (d.type === 'volt') {
+                addPoint(voltChart, voltData, d.frame, d.value);
+            } else if (d.type === 'status') {
+                document.getElementById('tec-badge').textContent = `TEC: ${d.tec}`;
+                document.getElementById('rec-badge').textContent = `REC: ${d.rec}`;
+                if (d.tec > 0 || d.rec > 0) {
+                    document.getElementById('tec-badge').className = 'badge error';
+                    document.getElementById('rec-badge').className = 'badge error';
+                    addFaultRow('TEC/REC Error', d.tec, d.rec);
+                    addLog(`ERROR: TEC=${d.tec} REC=${d.rec}`, 'error');
+                } else {
+                    document.getElementById('tec-badge').className = 'badge info';
+                    document.getElementById('rec-badge').className = 'badge info';
+                }
+            } else if (d.type === 'busoff') {
+                busOffCount++;
+                document.getElementById('busoff-badge').textContent = `Bus-Off: ${busOffCount}`;
+                document.getElementById('stat-busoff').textContent = busOffCount;
+                document.getElementById('bus-badge').innerHTML = '<span class="indicator red"></span>BUS: Bus-Off!';
+                document.getElementById('bus-badge').className = 'badge error';
+                addFaultRow('Bus-Off', '-', '-');
+                addLog(`🚨 Bus-Off #${busOffCount} detected!`, 'error');
+            } else if (d.type === 'recovered') {
+                document.getElementById('bus-badge').innerHTML = '<span class="indicator green"></span>BUS: Normal';
+                document.getElementById('bus-badge').className = 'badge ok';
+                addLog('✅ Bus recovered', 'normal');
+            }
+        });
+
+        socket.on('connect', () => {
+            document.getElementById('conn-badge').className = 'badge ok';
+            document.getElementById('conn-badge').innerHTML = '<span class="indicator green"></span>Connected';
+            addLog('Connected to CAN Monitor', 'info');
+        });
+        socket.on('disconnect', () => {
+            document.getElementById('conn-badge').className = 'badge error';
+            document.getElementById('conn-badge').innerHTML = '<span class="indicator red"></span>Disconnected';
+            addLog('Disconnected', 'error');
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+../Core/Src/mcp2515.c:8:6:MCP2515_Select	1
+../Core/Src/mcp2515.c:12:6:MCP2515_Deselect	1
+../Core/Src/mcp2515.c:16:9:MCP2515_ReadRegister	1
+../Core/Src/mcp2515.c:26:6:MCP2515_WriteRegister	1
+../Core/Src/mcp2515.c:35:6:MCP2515_Reset	1
+../Core/Src/mcp2515.c:43:6:MCP2515_Init	1
+../Core/Src/mcp2515.c:61:6:MCP2515_SendFrame	4
+../Core/Src/mcp2515.c:85:6:PrintErrorStatus	1

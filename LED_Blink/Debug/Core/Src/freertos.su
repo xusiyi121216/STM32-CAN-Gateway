@@ -1,0 +1,9 @@
+../Core/Src/freertos.c:27:6:MX_FREERTOS_Init	8	static
+../Core/Src/freertos.c:31:6:vApplicationStackOverflowHook	16	static
+../Core/Src/freertos.c:40:6:HAL_UART_RxCpltCallback	24	static
+../Core/Src/freertos.c:60:6:slcan_parse	144	static
+../Core/Src/freertos.c:122:6:slcan_receive	72	static
+../Core/Src/freertos.c:154:6:StartDefaultTask	16	static
+../Core/Src/freertos.c:163:6:StartCANTxTask	16	static
+../Core/Src/freertos.c:195:6:StartUARTLogTask	16	static
+../Core/Src/freertos.c:203:6:StartMonitorTask	16	static
